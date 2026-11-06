@@ -212,7 +212,7 @@ select_user_snell_version() {
     echo -e "${YELLOW}不同端口可以跑不同版本，彼此独立互不影响${RESET}\n"
     echo -e "${GREEN}1.${RESET} Snell v4        （$(snell_channel_label v4)）"
     echo -e "${GREEN}2.${RESET} Snell v5        （$(snell_channel_label v5)）"
-    echo -e "${GREEN}3.${RESET} Snell v6 (RC)   （$(snell_channel_label v6)）"
+    echo -e "${GREEN}3.${RESET} Snell v6        （$(snell_channel_label v6)）"
     echo -e "${GREEN}0.${RESET} 跟随主用户（${default_version}）"
 
     while true; do
@@ -226,7 +226,7 @@ select_user_snell_version() {
                     continue
                 fi
                 SNELL_VERSION_CHOICE="v6"
-                echo -e "${YELLOW}注意：v6 仍为预发布版本，已移除 QUIC 代理模式与 obfs${RESET}"
+                snell_v6_notes
                 break
                 ;;
             0|"") SNELL_VERSION_CHOICE="$default_version"; break ;;
@@ -268,6 +268,10 @@ switch_user_conf_version() {
     fi
     if [ ! -f "$unit" ]; then
         echo -e "${RED}未找到服务文件: ${unit}${RESET}"
+        return 1
+    fi
+
+    if [ "$target_version" = "v6" ] && ! check_conf_psk_for_v6 "$conf_file"; then
         return 1
     fi
 
@@ -561,8 +565,12 @@ modify_user() {
                 systemctl stop "$service_name" 2>/dev/null || true
                 systemctl disable "$service_name" 2>/dev/null || true
 
-                # 修改配置文件中的端口（尾部锚定：mod_port=5 不会误改 :12345）
-                sed -i "s/\(listen = .*:\)${mod_port}$/\1${new_port}/" "$user_conf"
+                # 修改配置文件中的端口：listen 里每个地址都改（v6 可以写多个地址），
+                # 按地址尾部匹配，mod_port=5 不会误改 :12345
+                local old_listen new_listen
+                old_listen=$(grep -E '^[[:space:]]*listen[[:space:]]*=' "$user_conf" | head -n 1 | sed 's/^[^=]*=[[:space:]]*//')
+                new_listen=$(listen_replace_port "$old_listen" "$mod_port" "$new_port")
+                sed -i "s|^[[:space:]]*listen[[:space:]]*=.*|listen = ${new_listen}|" "$user_conf"
                 if ! grep -Eq "^listen = .*:${new_port}$" "$user_conf"; then
                     echo -e "${RED}配置文件端口替换失败，已中止${RESET}"
                     systemctl enable "$service_name" 2>/dev/null || true

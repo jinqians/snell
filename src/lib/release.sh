@@ -1,10 +1,11 @@
 # ── lib/release.sh ────────────────────────────────────────────────────────────
 # Snell 官方版本：从发布页取各大版本的最新版本号，生成下载地址。POSIX sh。
 
-# 抓取失败时的兜底版本号
+# 抓取失败、或发布页上没有这个大版本的下载地址时的兜底版本号。
+# v6.0.0 正式版发布后，发布页去掉了 v5 的下载地址（只留更新说明），v5 从此只能靠这里的 v5.0.1
 SNELL_V4_FALLBACK="v4.1.1"
 SNELL_V5_FALLBACK="v5.0.1"
-SNELL_V6_FALLBACK="v6.0.0rc2"
+SNELL_V6_FALLBACK="v6.0.0"
 
 # Snell 官方发布页（旧的 manual.nssurge.com/others/snell.html 已下线）
 SNELL_RELEASE_NOTES_URL="https://kb.nssurge.com/surge-knowledge-base/release-notes/snell"

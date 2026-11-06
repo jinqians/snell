@@ -223,6 +223,60 @@ update_snell_symlink() {
     ln -sfn "$target" "${INSTALL_DIR}/snell-server"
 }
 
+# 下载官方的压缩包并解压出 <目录>/snell-server。只往 stderr 打印进度
+fetch_snell_release_binary() {   # <通道> <版本号> <目录>
+    local version="$1" resolved="$2" dir="$3" url
+    if ! url=$(snell_download_url_for "$version" "$resolved"); then
+        return 1
+    fi
+
+    echo -e "${CYAN}正在下载 Snell ${version} (${resolved})...${RESET}" >&2
+    echo -e "${YELLOW}${url}${RESET}" >&2
+
+    # 下载与解压要用的命令，缺了先装（任何发行版）
+    ensure_cmds curl unzip >&2 || return 1
+
+    if ! curl -fL --retry 3 --connect-timeout 10 --max-time 120 -o "${dir}/snell-server.zip" "$url"; then
+        echo -e "${RED}下载 Snell ${version} 失败: ${url}${RESET}" >&2
+        return 1
+    fi
+
+    # 校验压缩包完整性（官方未发布 hash，只能做传输完整性检查）
+    if ! unzip -t -q "${dir}/snell-server.zip" >/dev/null 2>&1; then
+        echo -e "${RED}下载的压缩包已损坏，已丢弃: ${url}${RESET}" >&2
+        return 1
+    fi
+
+    if ! unzip -o -q "${dir}/snell-server.zip" -d "$dir"; then
+        echo -e "${RED}解压 Snell ${version} 失败${RESET}" >&2
+        return 1
+    fi
+
+    if [ ! -f "${dir}/snell-server" ]; then
+        echo -e "${RED}压缩包中未找到 snell-server 可执行文件${RESET}" >&2
+        return 1
+    fi
+}
+
+# 本机这个通道的二进制和官方现在提供的 <版本号> 是不是同一个构建。
+# 只比版本号不够：v6 的 rc 自报的也是 v6.0.0，正式版发布后看起来就「已是最新」了。
+# 返回 0：不同，值得更新；1：相同；2：没下载到官方的，没法比
+snell_binary_differs_from_release() {   # <通道> <版本号>
+    local version="$1" resolved="$2" target tmp_dir rc=2
+    target=$(snell_binary_for_version "$version")
+    [ -x "$target" ] || return 0
+    tmp_dir=$(mktemp -d) || return 2
+    if fetch_snell_release_binary "$version" "$resolved" "$tmp_dir" 2>/dev/null; then
+        if [ "$(sha256sum < "$target")" = "$(sha256sum < "${tmp_dir}/snell-server")" ]; then
+            rc=1
+        else
+            rc=0
+        fi
+    fi
+    rm -rf "$tmp_dir"
+    return $rc
+}
+
 # 下载指定通道的二进制到版本化路径。force=true 时即使已存在也重新下载。
 # 只往 stderr 打印进度，stdout 留给调用方使用。
 install_snell_binary_for_version() {
@@ -242,44 +296,9 @@ install_snell_binary_for_version() {
         return 1
     fi
 
-    local url
-    if ! url=$(snell_download_url_for "$version" "$resolved"); then
-        return 1
-    fi
-
-    echo -e "${CYAN}正在下载 Snell ${version} (${resolved})...${RESET}" >&2
-    echo -e "${YELLOW}${url}${RESET}" >&2
-
-    # 下载与解压要用的命令，缺了先装（任何发行版）
-    ensure_cmds curl unzip >&2 || return 1
-
     local tmp_dir
     tmp_dir=$(mktemp -d) || return 1
-
-    local downloaded=false
-    curl -fL --retry 3 --connect-timeout 10 --max-time 120 -o "${tmp_dir}/snell-server.zip" "$url" && downloaded=true
-
-    if [ "$downloaded" != "true" ]; then
-        echo -e "${RED}下载 Snell ${version} 失败: ${url}${RESET}" >&2
-        rm -rf "$tmp_dir"
-        return 1
-    fi
-
-    # 校验压缩包完整性（官方未发布 hash，只能做传输完整性检查）
-    if ! unzip -t -q "${tmp_dir}/snell-server.zip" >/dev/null 2>&1; then
-        echo -e "${RED}下载的压缩包已损坏，已丢弃: ${url}${RESET}" >&2
-        rm -rf "$tmp_dir"
-        return 1
-    fi
-
-    if ! unzip -o -q "${tmp_dir}/snell-server.zip" -d "$tmp_dir"; then
-        echo -e "${RED}解压 Snell ${version} 失败${RESET}" >&2
-        rm -rf "$tmp_dir"
-        return 1
-    fi
-
-    if [ ! -f "${tmp_dir}/snell-server" ]; then
-        echo -e "${RED}压缩包中未找到 snell-server 可执行文件${RESET}" >&2
+    if ! fetch_snell_release_binary "$version" "$resolved" "$tmp_dir"; then
         rm -rf "$tmp_dir"
         return 1
     fi

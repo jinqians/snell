@@ -150,10 +150,11 @@ fetch_verified_script() {   # <url> <dest>
 # ── lib/release.sh ────────────────────────────────────────────────────────────
 # Snell 官方版本：从发布页取各大版本的最新版本号，生成下载地址。POSIX sh。
 
-# 抓取失败时的兜底版本号
+# 抓取失败、或发布页上没有这个大版本的下载地址时的兜底版本号。
+# v6.0.0 正式版发布后，发布页去掉了 v5 的下载地址（只留更新说明），v5 从此只能靠这里的 v5.0.1
 SNELL_V4_FALLBACK="v4.1.1"
 SNELL_V5_FALLBACK="v5.0.1"
-SNELL_V6_FALLBACK="v6.0.0rc2"
+SNELL_V6_FALLBACK="v6.0.0"
 
 # Snell 官方发布页（旧的 manual.nssurge.com/others/snell.html 已下线）
 SNELL_RELEASE_NOTES_URL="https://kb.nssurge.com/surge-knowledge-base/release-notes/snell"
@@ -563,7 +564,7 @@ show_port_occupier() {   # <port>
 BLUE='\033[0;34m'
 
 # --- 脚本版本号 ---
-current_version="2.6"
+current_version="2.7"
 
 # --- 全局变量 ---
 SNELL_VERSION_CHOICE=""
@@ -687,7 +688,7 @@ select_snell_version() {
     echo -e "${CYAN}请选择要安装的 Snell 版本：${RESET}"
     echo -e "${GREEN}1.${RESET} Snell v4"
     echo -e "${GREEN}2.${RESET} Snell v5"
-    echo -e "${GREEN}3.${RESET} Snell v6 (RC)"
+    echo -e "${GREEN}3.${RESET} Snell v6"
 
     while true; do
         printf "请输入选项 [1-3]: "
@@ -695,7 +696,7 @@ select_snell_version() {
         case "$version_choice" in
             1) SNELL_VERSION_CHOICE="v4"; echo -e "${GREEN}已选择 Snell v4${RESET}"; break ;;
             2) SNELL_VERSION_CHOICE="v5"; echo -e "${GREEN}已选择 Snell v5${RESET}"; break ;;
-            3) SNELL_VERSION_CHOICE="v6"; echo -e "${GREEN}已选择 Snell v6 (RC)${RESET}"; echo -e "${YELLOW}注意：v6 仍为预发布版本，协议可能存在不兼容更新${RESET}"; echo -e "${YELLOW}v6 已移除 QUIC 代理模式与 obfs，且不提供 armv7l 构建${RESET}"; echo -e "${YELLOW}加密模式：mode = ${SNELL_MODE}（客户端需配置相同的 mode）${RESET}"; break ;;
+            3) SNELL_VERSION_CHOICE="v6"; echo -e "${GREEN}已选择 Snell v6${RESET}"; echo -e "${YELLOW}v6 只接受 version = 6 的客户端（v4 / v5 的客户端连不上），客户端的 mode 也要和服务端一样${RESET}"; echo -e "${YELLOW}v6 已移除 QUIC 代理模式与 obfs，且不提供 armv7l 构建${RESET}"; break ;;
             *) echo -e "${RED}请输入正确的选项 [1-3]${RESET}" ;;
         esac
     done

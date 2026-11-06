@@ -35,7 +35,12 @@ env:
   # 全量构建时使用的历史版本清单（与 build-docker-images.sh 保持一致）
   V4_ALL_VERSIONS: "4.0.0 4.0.1 4.1.0 4.1.1"
   V5_ALL_VERSIONS: "5.0.0 5.0.1"
-  V6_ALL_VERSIONS: "6.0.0b1 6.0.0b2 6.0.0b3 6.0.0b4 6.0.0rc 6.0.0rc2"
+  V6_ALL_VERSIONS: "6.0.0b1 6.0.0b2 6.0.0b3 6.0.0b4 6.0.0rc 6.0.0rc2 6.0.0"
+  # 发布页上没有某个大版本的下载地址时用这些（与 src/lib/release.sh 的兜底版本一致）。
+  # v6.0.0 发布后发布页去掉了 v5 的下载地址，v5 只能靠这里
+  V4_FALLBACK: "4.1.1"
+  V5_FALLBACK: "5.0.1"
+  V6_FALLBACK: "6.0.0"
 
 jobs:
   # 解析上游最新版本，并跳过 Docker Hub 上已存在的版本
@@ -79,12 +84,28 @@ jobs:
             }'
           }
 
+          # 发布页上没有这个大版本的下载地址时 grep 匹配不到，在 pipefail 下整步会失败，
+          # 所以这里不让它失败，由 latest_of 换成兜底版本
           pick_latest() {
-            echo "$NOTES" \
-              | grep -oE "snell-server-v$1\.[0-9]+\.[0-9]+[a-zA-Z0-9]*" \
+            { echo "$NOTES" | grep -oE "snell-server-v$1\.[0-9]+\.[0-9]+[a-zA-Z0-9]*" || true; } \
               | sed 's/^snell-server-v//' | sort -u \
               | while read -r v; do echo "$(sort_key "$v") $v"; done \
               | sort | tail -n 1 | awk '{print $2}'
+          }
+
+          # 通道的最新版本号（不带 v）：发布页上有就用发布页的，没有就用兜底版本
+          latest_of() {
+            local v
+            v=$(pick_latest "$1")
+            if [ -z "$v" ]; then
+              case "$1" in
+                4) v="$V4_FALLBACK" ;;
+                5) v="$V5_FALLBACK" ;;
+                6) v="$V6_FALLBACK" ;;
+              esac
+              echo "::notice::发布页上没有 v$1 的下载地址，使用兜底版本 ${v}" >&2
+            fi
+            echo "$v"
           }
 
           # 查询 Docker Hub 上标签是否已存在
@@ -106,7 +127,7 @@ jobs:
           entries=""
           for channel in $(echo "$CHANNELS" | tr ',' ' '); do
             major="${channel#v}"
-            latest="v$(pick_latest "$major")"
+            latest="v$(latest_of "$major")"
             if [ "$latest" = "v" ]; then
               echo "::warning::无法解析 ${channel} 最新版本，已跳过"
               continue
@@ -168,7 +189,7 @@ jobs:
           # 全量模式串行构建以保证标签时间戳顺序，并记录 latest 应指向的版本
           if [ "$ALL_VERSIONS" = "true" ]; then
             echo "ordered=true" >> "$GITHUB_OUTPUT"
-            echo "latest_version=v$(pick_latest "${LATEST_CHANNEL#v}")" >> "$GITHUB_OUTPUT"
+            echo "latest_version=v$(latest_of "${LATEST_CHANNEL#v}")" >> "$GITHUB_OUTPUT"
           else
             echo "ordered=false" >> "$GITHUB_OUTPUT"
             echo "latest_version=" >> "$GITHUB_OUTPUT"

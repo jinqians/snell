@@ -150,10 +150,11 @@ fetch_verified_script() {   # <url> <dest>
 # ── lib/release.sh ────────────────────────────────────────────────────────────
 # Snell 官方版本：从发布页取各大版本的最新版本号，生成下载地址。POSIX sh。
 
-# 抓取失败时的兜底版本号
+# 抓取失败、或发布页上没有这个大版本的下载地址时的兜底版本号。
+# v6.0.0 正式版发布后，发布页去掉了 v5 的下载地址（只留更新说明），v5 从此只能靠这里的 v5.0.1
 SNELL_V4_FALLBACK="v4.1.1"
 SNELL_V5_FALLBACK="v5.0.1"
-SNELL_V6_FALLBACK="v6.0.0rc2"
+SNELL_V6_FALLBACK="v6.0.0"
 
 # Snell 官方发布页（旧的 manual.nssurge.com/others/snell.html 已下线）
 SNELL_RELEASE_NOTES_URL="https://kb.nssurge.com/surge-knowledge-base/release-notes/snell"
@@ -785,6 +786,60 @@ update_snell_symlink() {
     ln -sfn "$target" "${INSTALL_DIR}/snell-server"
 }
 
+# 下载官方的压缩包并解压出 <目录>/snell-server。只往 stderr 打印进度
+fetch_snell_release_binary() {   # <通道> <版本号> <目录>
+    local version="$1" resolved="$2" dir="$3" url
+    if ! url=$(snell_download_url_for "$version" "$resolved"); then
+        return 1
+    fi
+
+    echo -e "${CYAN}正在下载 Snell ${version} (${resolved})...${RESET}" >&2
+    echo -e "${YELLOW}${url}${RESET}" >&2
+
+    # 下载与解压要用的命令，缺了先装（任何发行版）
+    ensure_cmds curl unzip >&2 || return 1
+
+    if ! curl -fL --retry 3 --connect-timeout 10 --max-time 120 -o "${dir}/snell-server.zip" "$url"; then
+        echo -e "${RED}下载 Snell ${version} 失败: ${url}${RESET}" >&2
+        return 1
+    fi
+
+    # 校验压缩包完整性（官方未发布 hash，只能做传输完整性检查）
+    if ! unzip -t -q "${dir}/snell-server.zip" >/dev/null 2>&1; then
+        echo -e "${RED}下载的压缩包已损坏，已丢弃: ${url}${RESET}" >&2
+        return 1
+    fi
+
+    if ! unzip -o -q "${dir}/snell-server.zip" -d "$dir"; then
+        echo -e "${RED}解压 Snell ${version} 失败${RESET}" >&2
+        return 1
+    fi
+
+    if [ ! -f "${dir}/snell-server" ]; then
+        echo -e "${RED}压缩包中未找到 snell-server 可执行文件${RESET}" >&2
+        return 1
+    fi
+}
+
+# 本机这个通道的二进制和官方现在提供的 <版本号> 是不是同一个构建。
+# 只比版本号不够：v6 的 rc 自报的也是 v6.0.0，正式版发布后看起来就「已是最新」了。
+# 返回 0：不同，值得更新；1：相同；2：没下载到官方的，没法比
+snell_binary_differs_from_release() {   # <通道> <版本号>
+    local version="$1" resolved="$2" target tmp_dir rc=2
+    target=$(snell_binary_for_version "$version")
+    [ -x "$target" ] || return 0
+    tmp_dir=$(mktemp -d) || return 2
+    if fetch_snell_release_binary "$version" "$resolved" "$tmp_dir" 2>/dev/null; then
+        if [ "$(sha256sum < "$target")" = "$(sha256sum < "${tmp_dir}/snell-server")" ]; then
+            rc=1
+        else
+            rc=0
+        fi
+    fi
+    rm -rf "$tmp_dir"
+    return $rc
+}
+
 # 下载指定通道的二进制到版本化路径。force=true 时即使已存在也重新下载。
 # 只往 stderr 打印进度，stdout 留给调用方使用。
 install_snell_binary_for_version() {
@@ -804,44 +859,9 @@ install_snell_binary_for_version() {
         return 1
     fi
 
-    local url
-    if ! url=$(snell_download_url_for "$version" "$resolved"); then
-        return 1
-    fi
-
-    echo -e "${CYAN}正在下载 Snell ${version} (${resolved})...${RESET}" >&2
-    echo -e "${YELLOW}${url}${RESET}" >&2
-
-    # 下载与解压要用的命令，缺了先装（任何发行版）
-    ensure_cmds curl unzip >&2 || return 1
-
     local tmp_dir
     tmp_dir=$(mktemp -d) || return 1
-
-    local downloaded=false
-    curl -fL --retry 3 --connect-timeout 10 --max-time 120 -o "${tmp_dir}/snell-server.zip" "$url" && downloaded=true
-
-    if [ "$downloaded" != "true" ]; then
-        echo -e "${RED}下载 Snell ${version} 失败: ${url}${RESET}" >&2
-        rm -rf "$tmp_dir"
-        return 1
-    fi
-
-    # 校验压缩包完整性（官方未发布 hash，只能做传输完整性检查）
-    if ! unzip -t -q "${tmp_dir}/snell-server.zip" >/dev/null 2>&1; then
-        echo -e "${RED}下载的压缩包已损坏，已丢弃: ${url}${RESET}" >&2
-        rm -rf "$tmp_dir"
-        return 1
-    fi
-
-    if ! unzip -o -q "${tmp_dir}/snell-server.zip" -d "$tmp_dir"; then
-        echo -e "${RED}解压 Snell ${version} 失败${RESET}" >&2
-        rm -rf "$tmp_dir"
-        return 1
-    fi
-
-    if [ ! -f "${tmp_dir}/snell-server" ]; then
-        echo -e "${RED}压缩包中未找到 snell-server 可执行文件${RESET}" >&2
+    if ! fetch_snell_release_binary "$version" "$resolved" "$tmp_dir"; then
         rm -rf "$tmp_dir"
         return 1
     fi
@@ -1179,13 +1199,44 @@ SNELL_V6_OPTIONS_SET="false"
 
 IPV6_ENABLE="true"
 
+# Snell v6 的 PSK 必须是 12 到 255 个字节，否则 snell-server 拒绝启动
+SNELL_V6_PSK_MIN=12
+SNELL_V6_PSK_MAX=255
+
+# 选了 v6 时提醒一次
+snell_v6_notes() {
+    echo -e "${YELLOW}v6 只接受 version = 6 的客户端（v4 / v5 的客户端连不上），客户端的 mode 也要和服务端一样${RESET}"
+    echo -e "${YELLOW}v6 已移除 QUIC 代理模式与 obfs，且不提供 armv7l 构建${RESET}"
+}
+
+# 配置里的 PSK 能不能给 v6 用；不能时说明原因并返回 1
+check_conf_psk_for_v6() {   # <conf>
+    local psk len
+    psk=$(grep -E '^[[:space:]]*psk[[:space:]]*=' "$1" 2>/dev/null | head -n 1 \
+        | sed -e 's/^[^=]*=[[:space:]]*//' -e 's/[[:space:]]*$//')
+    len=$(printf '%s' "$psk" | LC_ALL=C wc -c | tr -d ' ')
+    if [ "$len" -ge "$SNELL_V6_PSK_MIN" ] && [ "$len" -le "$SNELL_V6_PSK_MAX" ]; then
+        return 0
+    fi
+    echo -e "${RED}这个用户的 PSK 有 ${len} 个字节，Snell v6 要求 ${SNELL_V6_PSK_MIN} 到 ${SNELL_V6_PSK_MAX} 个字节，否则服务起不来${RESET}"
+    echo -e "${YELLOW}请先给它换一个 PSK（主菜单「修改端口 / PSK / DNS」，直接回车会随机生成 20 位），再切到 v6${RESET}"
+    return 1
+}
+
+# listen 里每个地址的端口都从 <旧端口> 换成 <新端口>。
+# v6 的 listen 可以是逗号隔开的多个地址（listen = 0.0.0.0:7177,[::]:7177），只改最后一个会让两个地址端口不一致
+listen_replace_port() {   # <listen 的值> <旧端口> <新端口>
+    printf '%s\n' "$1" | awk -v o="$2" -v n="$3" 'BEGIN { FS = OFS = "," }
+        { for (i = 1; i <= NF; i++) sub(":" o "[[:space:]]*$", ":" n, $i); print }'
+}
+
 # === 新增：版本选择函数 ===
 # 选择 Snell 版本
 select_snell_version() {
     echo -e "${CYAN}请选择要安装的 Snell 版本：${RESET}"
     echo -e "${GREEN}1.${RESET} Snell v4"
     echo -e "${GREEN}2.${RESET} Snell v5"
-    echo -e "${GREEN}3.${RESET} Snell v6 (RC)"
+    echo -e "${GREEN}3.${RESET} Snell v6"
 
     while true; do
         read -rp "请输入选项 [1-3]: " version_choice
@@ -1202,10 +1253,8 @@ select_snell_version() {
                 ;;
             3)
                 SNELL_VERSION_CHOICE="v6"
-                echo -e "${GREEN}已选择 Snell v6 (RC)${RESET}"
-                echo -e "${YELLOW}注意：v6 仍为预发布版本，协议可能存在不兼容更新${RESET}"
-                echo -e "${YELLOW}v6 已移除 QUIC 代理模式与 obfs，且不提供 armv7l 构建${RESET}"
-                echo -e "${YELLOW}加密模式：mode = ${SNELL_MODE}（客户端需配置相同的 mode）${RESET}"
+                echo -e "${GREEN}已选择 Snell v6${RESET}"
+                snell_v6_notes
                 break
                 ;;
             *)
@@ -1789,7 +1838,7 @@ select_user_snell_version() {
     echo -e "${YELLOW}不同端口可以跑不同版本，彼此独立互不影响${RESET}\n"
     echo -e "${GREEN}1.${RESET} Snell v4        （$(snell_channel_label v4)）"
     echo -e "${GREEN}2.${RESET} Snell v5        （$(snell_channel_label v5)）"
-    echo -e "${GREEN}3.${RESET} Snell v6 (RC)   （$(snell_channel_label v6)）"
+    echo -e "${GREEN}3.${RESET} Snell v6        （$(snell_channel_label v6)）"
     echo -e "${GREEN}0.${RESET} 跟随主用户（${default_version}）"
 
     while true; do
@@ -1803,7 +1852,7 @@ select_user_snell_version() {
                     continue
                 fi
                 SNELL_VERSION_CHOICE="v6"
-                echo -e "${YELLOW}注意：v6 仍为预发布版本，已移除 QUIC 代理模式与 obfs${RESET}"
+                snell_v6_notes
                 break
                 ;;
             0|"") SNELL_VERSION_CHOICE="$default_version"; break ;;
@@ -1845,6 +1894,10 @@ switch_user_conf_version() {
     fi
     if [ ! -f "$unit" ]; then
         echo -e "${RED}未找到服务文件: ${unit}${RESET}"
+        return 1
+    fi
+
+    if [ "$target_version" = "v6" ] && ! check_conf_psk_for_v6 "$conf_file"; then
         return 1
     fi
 
@@ -2138,8 +2191,12 @@ modify_user() {
                 systemctl stop "$service_name" 2>/dev/null || true
                 systemctl disable "$service_name" 2>/dev/null || true
 
-                # 修改配置文件中的端口（尾部锚定：mod_port=5 不会误改 :12345）
-                sed -i "s/\(listen = .*:\)${mod_port}$/\1${new_port}/" "$user_conf"
+                # 修改配置文件中的端口：listen 里每个地址都改（v6 可以写多个地址），
+                # 按地址尾部匹配，mod_port=5 不会误改 :12345
+                local old_listen new_listen
+                old_listen=$(grep -E '^[[:space:]]*listen[[:space:]]*=' "$user_conf" | head -n 1 | sed 's/^[^=]*=[[:space:]]*//')
+                new_listen=$(listen_replace_port "$old_listen" "$mod_port" "$new_port")
+                sed -i "s|^[[:space:]]*listen[[:space:]]*=.*|listen = ${new_listen}|" "$user_conf"
                 if ! grep -Eq "^listen = .*:${new_port}$" "$user_conf"; then
                     echo -e "${RED}配置文件端口替换失败，已中止${RESET}"
                     systemctl enable "$service_name" 2>/dev/null || true

@@ -19,7 +19,7 @@ SNELL_LIB="${SNELL_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib}"  # @
 . "$SNELL_LIB/routing.sh"   # @bundle
 
 #当前版本号
-current_version="6.2"
+current_version="6.3"
 
 # 出口控制（netns + socket activation）默认参数
 EGRESS_FEATURE_ENABLED="false"
@@ -1605,6 +1605,10 @@ switch_conf_to_version() {
         return 1
     fi
 
+    if [ "$target_version" = "v6" ] && ! check_conf_psk_for_v6 "$conf_file"; then
+        return 1
+    fi
+
     if ! ensure_snell_binary "$target_version"; then
         return 1
     fi
@@ -1681,12 +1685,24 @@ update_installed_channels() {
             echo -e "${YELLOW}无法获取最新版本，跳过${RESET}"
             continue
         fi
+        local found="发现新版本"
         if [ -n "$current" ] && version_greater_equal "$current" "$latest"; then
-            echo -e "${GREEN}已是最新${RESET}"
-            continue
+            # 版本号一样时再比一下构建：v6 的 rc 自报的也是 v6.0.0
+            if [ "$(snell_version_sort_key "$current")" != "$(snell_version_sort_key "$latest")" ]; then
+                echo -e "${GREEN}已是最新${RESET}"
+                continue
+            fi
+            echo -e "${CYAN}版本号相同，正在和官方的 ${latest} 比对是不是同一个构建...${RESET}"
+            snell_binary_differs_from_release "$version" "$latest"
+            case $? in
+                1) echo -e "${GREEN}已是最新${RESET}"; continue ;;
+                2) echo -e "${YELLOW}没下载到官方的 ${latest}，没法比对，先当作已是最新${RESET}"; continue ;;
+            esac
+            echo -e "${YELLOW}本机的二进制和官方现在的 ${latest} 不是同一个构建（比如装的是正式版之前的预发布版）${RESET}"
+            found="官方有新的构建"
         fi
 
-        echo -e "${CYAN}发现新版本，是否更新 ${version} 通道? [y/N]${RESET}"
+        echo -e "${CYAN}${found}，是否更新 ${version} 通道? [y/N]${RESET}"
         read -r choice
         if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
             update_snell_channel "$version" && updated=$((updated + 1))
@@ -1800,7 +1816,7 @@ switch_user_channel() {
     echo -e "\n${YELLOW}=== 选择目标通道（当前 ${current}）===${RESET}"
     echo -e "${GREEN}1.${RESET} Snell v4"
     echo -e "${GREEN}2.${RESET} Snell v5"
-    echo -e "${GREEN}3.${RESET} Snell v6 (RC)"
+    echo -e "${GREEN}3.${RESET} Snell v6"
     echo -e "${GREEN}0.${RESET} 返回"
     read -rp "请输入选项 [0-3]: " target_pick
 
@@ -1810,7 +1826,7 @@ switch_user_channel() {
         2) target="v5" ;;
         3)
             target="v6"
-            echo -e "${YELLOW}注意：v6 仍为预发布版本，已移除 QUIC 代理模式与 obfs${RESET}"
+            snell_v6_notes
             ;;
         0|"") return 0 ;;
         *) echo -e "${RED}无效选项${RESET}"; return 1 ;;
@@ -2008,9 +2024,11 @@ port_taken_by_snell() {   # <port> <除外的 conf>
 }
 
 edit_snell_port() {   # <conf> <service>
-    local conf="$1" service="$2" old new host version ns
+    local conf="$1" service="$2" old new listen host version ns
     old=$(conf_port "$conf")
-    host=$(conf_value "$conf" listen | sed 's/:[0-9]*$//')
+    listen=$(conf_value "$conf" listen)
+    # 第一个地址的主机部分（v6 的 listen 可以是逗号隔开的多个地址）
+    host=$(printf '%s' "$listen" | cut -d, -f1 | sed 's/:[0-9]*[[:space:]]*$//')
     while true; do
         read -rp "新端口（1-65535，直接回车取消）: " new || return 0
         [ -z "$new" ] && return 0
@@ -2044,7 +2062,7 @@ edit_snell_port() {   # <conf> <service>
     if $socket_mode; then systemctl stop snell snell.socket 2>/dev/null; else systemctl stop "$service" 2>/dev/null; fi
 
     local ok=true
-    conf_set "$conf" listen "${host}:${new}" || ok=false
+    conf_set "$conf" listen "$(listen_replace_port "$listen" "$old" "$new")" || ok=false
     if $ok && [ "$service" != "snell" ]; then
         # 多用户：配置与 unit 都按端口命名
         systemctl disable "$service" 2>/dev/null
@@ -2123,8 +2141,9 @@ edit_snell_psk() {   # <conf> <service>
     while true; do
         read -rp "新 PSK（直接回车随机生成）: " psk || return 0
         [ -z "$psk" ] && psk=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 20)
-        [[ "$psk" =~ ^[A-Za-z0-9._~+/=-]{8,128}$ ]] && break
-        echo -e "${RED}PSK 要 8 到 128 个字符，只能是字母、数字和 . _ ~ + / = -${RESET}"
+        # 下限 12：Snell v6 的 PSK 少于 12 个字节就起不来，v4 / v5 也按这个来，以后切到 v6 不用再换
+        [[ "$psk" =~ ^[A-Za-z0-9._~+/=-]{12,128}$ ]] && break
+        echo -e "${RED}PSK 要 12 到 128 个字符，只能是字母、数字和 . _ ~ + / = -${RESET}"
     done
     edit_backup "$conf"
     if conf_set "$conf" psk "$psk" && restart_and_verify_service "$service"; then

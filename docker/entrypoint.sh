@@ -114,6 +114,17 @@ print_client_config() {
     } | tee "$CLIENT_FILE" 2>/dev/null || true
 }
 
+# Snell v6 的 PSK 必须是 12 到 255 个字节，否则 snell-server 拒绝启动；在这里先说清楚怎么改
+check_v6_psk() {   # <psk> <来源>
+    _len=$(printf '%s' "$1" | wc -c | tr -d ' ')
+    if [ "$_len" -lt 12 ] || [ "$_len" -gt 255 ]; then
+        echo "错误: Snell v6 的 PSK 要 12 到 255 个字节，$2 里的有 ${_len} 个字节"
+        echo "      换一个 SNELL_PSK（或者不设，让容器随机生成）；已有配置文件的，编辑 ${CONFIG_FILE} 里的 psk 后重启容器"
+        exit 1
+    fi
+    unset _len
+}
+
 mkdir -p "$CONFIG_DIR"
 
 SNELL_VER="${SNELL_VER:-v4}"
@@ -136,6 +147,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
 
     # Snell 版本: v4/v5/v6 配置有差异
     if [ "$SNELL_VER" = "v6" ]; then
+        check_v6_psk "$SNELL_PSK" "环境变量 SNELL_PSK"
         # v6: ipv6 参数已废弃，改用 mode / dns-ip-preference
         SNELL_MODE="${SNELL_MODE:-default}"
         DNS_IP_PREFERENCE="${SNELL_DNS_IP_PREFERENCE:-}"
@@ -192,6 +204,8 @@ warn_env_ignored() {
 if [ "$SNELL_VER" = "v6" ]; then
     warn_env_ignored "mode" "${SNELL_MODE:-}"
     warn_env_ignored "dns-ip-preference" "${SNELL_DNS_IP_PREFERENCE:-}"
+    # 配置文件是以前生成的或手改过的：同样要满足 v6 的长度要求
+    check_v6_psk "$(config_get psk)" "${CONFIG_FILE}"
 fi
 warn_env_ignored "psk" "${SNELL_PSK:-}"
 warn_env_ignored "dns" "${SNELL_DNS:-}"

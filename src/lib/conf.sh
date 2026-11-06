@@ -17,13 +17,44 @@ SNELL_V6_OPTIONS_SET="false"
 
 IPV6_ENABLE="true"
 
+# Snell v6 的 PSK 必须是 12 到 255 个字节，否则 snell-server 拒绝启动
+SNELL_V6_PSK_MIN=12
+SNELL_V6_PSK_MAX=255
+
+# 选了 v6 时提醒一次
+snell_v6_notes() {
+    echo -e "${YELLOW}v6 只接受 version = 6 的客户端（v4 / v5 的客户端连不上），客户端的 mode 也要和服务端一样${RESET}"
+    echo -e "${YELLOW}v6 已移除 QUIC 代理模式与 obfs，且不提供 armv7l 构建${RESET}"
+}
+
+# 配置里的 PSK 能不能给 v6 用；不能时说明原因并返回 1
+check_conf_psk_for_v6() {   # <conf>
+    local psk len
+    psk=$(grep -E '^[[:space:]]*psk[[:space:]]*=' "$1" 2>/dev/null | head -n 1 \
+        | sed -e 's/^[^=]*=[[:space:]]*//' -e 's/[[:space:]]*$//')
+    len=$(printf '%s' "$psk" | LC_ALL=C wc -c | tr -d ' ')
+    if [ "$len" -ge "$SNELL_V6_PSK_MIN" ] && [ "$len" -le "$SNELL_V6_PSK_MAX" ]; then
+        return 0
+    fi
+    echo -e "${RED}这个用户的 PSK 有 ${len} 个字节，Snell v6 要求 ${SNELL_V6_PSK_MIN} 到 ${SNELL_V6_PSK_MAX} 个字节，否则服务起不来${RESET}"
+    echo -e "${YELLOW}请先给它换一个 PSK（主菜单「修改端口 / PSK / DNS」，直接回车会随机生成 20 位），再切到 v6${RESET}"
+    return 1
+}
+
+# listen 里每个地址的端口都从 <旧端口> 换成 <新端口>。
+# v6 的 listen 可以是逗号隔开的多个地址（listen = 0.0.0.0:7177,[::]:7177），只改最后一个会让两个地址端口不一致
+listen_replace_port() {   # <listen 的值> <旧端口> <新端口>
+    printf '%s\n' "$1" | awk -v o="$2" -v n="$3" 'BEGIN { FS = OFS = "," }
+        { for (i = 1; i <= NF; i++) sub(":" o "[[:space:]]*$", ":" n, $i); print }'
+}
+
 # === 新增：版本选择函数 ===
 # 选择 Snell 版本
 select_snell_version() {
     echo -e "${CYAN}请选择要安装的 Snell 版本：${RESET}"
     echo -e "${GREEN}1.${RESET} Snell v4"
     echo -e "${GREEN}2.${RESET} Snell v5"
-    echo -e "${GREEN}3.${RESET} Snell v6 (RC)"
+    echo -e "${GREEN}3.${RESET} Snell v6"
 
     while true; do
         read -rp "请输入选项 [1-3]: " version_choice
@@ -40,10 +71,8 @@ select_snell_version() {
                 ;;
             3)
                 SNELL_VERSION_CHOICE="v6"
-                echo -e "${GREEN}已选择 Snell v6 (RC)${RESET}"
-                echo -e "${YELLOW}注意：v6 仍为预发布版本，协议可能存在不兼容更新${RESET}"
-                echo -e "${YELLOW}v6 已移除 QUIC 代理模式与 obfs，且不提供 armv7l 构建${RESET}"
-                echo -e "${YELLOW}加密模式：mode = ${SNELL_MODE}（客户端需配置相同的 mode）${RESET}"
+                echo -e "${GREEN}已选择 Snell v6${RESET}"
+                snell_v6_notes
                 break
                 ;;
             *)
