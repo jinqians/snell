@@ -309,12 +309,18 @@ get_ip_country() {
     for api in "https://ipinfo.io/${target}/country" \
                "http://ip-api.com/line/${target}?fields=countryCode" \
                "https://ipwho.is/${target}?fields=country_code" \
-               "https://ipapi.co/${target}/country/"; do
+               "https://ipapi.co/${target}/country/" \
+               "https://api.internetdata.io/${target}"; do
         raw=$(curl -s --connect-timeout 5 --max-time 10 "$api" 2>/dev/null)
         result=$(echo "$raw" | tr -d ' \t\r\n')
         case "$result" in
             [A-Za-z][A-Za-z]) ;;
             *) result=$(echo "$raw" | sed -n 's/.*"country_code"[[:space:]]*:[[:space:]]*"\([A-Za-z][A-Za-z]\)".*/\1/p' | head -n 1) ;;
+        esac
+        # InternetData 返回多行 JSON，国家代码在 location 里
+        case "$result" in
+            [A-Za-z][A-Za-z]) ;;
+            *) result=$(echo "$raw" | tr -d ' \t\r\n' | sed -n 's/.*"location":{[^}]*"country":"\([A-Za-z][A-Za-z]\)".*/\1/p' | head -n 1) ;;
         esac
         case "$result" in
             [A-Za-z][A-Za-z])
